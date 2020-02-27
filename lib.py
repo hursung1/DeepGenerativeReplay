@@ -1,43 +1,7 @@
 import torch
 import torchvision
 import numpy as np
-
-class PermutedMNISTDataLoader(torchvision.datasets.MNIST):
-    """
-    Make randomly permuted MNIST Data.
-    """
-    def __init__(self, source='data/mnist_data', train = True, shuffle_seed = None):
-        super(PermutedMNISTDataLoader, self).__init__(source, train, download=True)
-        
-        self.train = train
-        self.num_data = 0
-        
-        if self.train:
-            self.permuted_train_data = torch.stack(
-                [img.type(dtype=torch.float32).view(-1)[shuffle_seed] / 255.0
-                    for img in self.train_data])
-            self.num_data = self.permuted_train_data.shape[0]
-            
-        else:
-            self.permuted_test_data = torch.stack(
-                [img.type(dtype=torch.float32).view(-1)[shuffle_seed] / 255.0
-                    for img in self.test_data])
-            self.num_data = self.permuted_test_data.shape[0]
-            
-            
-    def __getitem__(self, index):
-        
-        if self.train:
-            input, label = self.permuted_train_data[index], self.train_labels[index]
-        else:
-            input, label = self.permuted_test_data[index], self.test_labels[index]
-        
-        return input, label
-
-    
-    def getNumData(self):
-        return self.num_data
-
+import matplotlib.pyplot as plt
 
 def permute_mnist(num_task, batch_size):
     """
@@ -79,110 +43,80 @@ def permute_mnist(num_task, batch_size):
     
     return train_loader, test_loader, int(train_data_num/num_task), int(test_data_num/num_task)
 
-class Generator(torch.nn.Module):
+        
+def imshow(img):
+    img = (img+1)/2    
+    img = img.squeeze()
+    np_img = img.numpy()
+    plt.imshow(np_img, cmap='gray')
+    plt.show()
+
+    
+def imshow_grid(img):
+    img = torchvision.utils.make_grid(img.cpu().detach())
+    img = (img+1)/2
+    npimg = np.transpose(img.numpy(), (1, 2, 0))
+    plt.imshow(npimg)
+    plt.show()
+    
+    
+def sample_noise(batch_size, N_noise):
     """
-    Generator Class for GAN
+    Returns 
     """
-    def __init__(self):
-        super(Generator, self).__init__()
-        conv2d_1 = torch.nn.ConvTranspose2d(in_channels=num_noise,
-                                   out_channels=28*8, 
-                                   kernel_size=7, 
-                                   stride=1,
-                                   padding=0,
-                                   bias=False)
-        conv2d_2 = torch.nn.ConvTranspose2d(in_channels=28*8, 
-                                   out_channels=28*4, 
-                                   kernel_size=4, 
-                                   stride=2,
-                                   padding=1,
-                                   bias=False)
-        conv2d_3 = torch.nn.ConvTranspose2d(in_channels=28*4, 
-                                   out_channels=1, 
-                                   kernel_size=4, 
-                                   stride=2,
-                                   padding=1,
-                                   bias=False)
+    if torch.cuda.is_available():
+        return torch.randn(batch_size, N_noise).cuda()
+    else:
+        return torch.randn(batch_size, N_noise)
+    
 
-        self.network = torch.nn.Sequential(
-            conv2d_1,
-            torch.nn.BatchNorm2d(num_features = 28*8),
-            torch.nn.ReLU(inplace=True),
-            conv2d_2,
-            torch.nn.BatchNorm2d(num_features = 28*4),
-            torch.nn.ReLU(inplace=True),
-            conv2d_3,
-            torch.nn.Tanh()
-        )
+def gan_evaluate(**kwargs):
+#def gan_evaluate(cur_task, gen, disc, TestDataLoaders):
+    batch_size = kwargs['batch_size']
+    num_noise = kwargs['num_noise']
+    cur_task = kwargs['cur_task']
+    gen = kwargs['gen']
+    disc = kwargs['disc']
+    TestDataLoaders = kwargs['TestDataLoaders']
+    
+    p_real = p_fake = 0.0
+    test_dataloaders = TestDataLoaders[:cur_task+1]
+    
+    gen.eval()
+    disc.eval()
+        
+    for testloader in test_dataloaders:
+        for image, _ in testloader:
+            if torch.cuda.is_available():
+                image = image.cuda()
 
-        if torch.cuda.is_available():
-            self.network = self.network.cuda()
+            with torch.autograd.no_grad():
+                p_real += (torch.sum(disc(image.view(image.shape[0], -1 , 28, 28))).item())/10000.
+                p_fake += (torch.sum(disc(gen(sample_noise(batch_size, num_noise)))).item())/10000.
 
-    def forward(self, x):
-        return self.network(x.view(-1, num_noise, 1, 1))
+    return p_real, p_fake
 
 
-class Discriminator(torch.nn.Module):
-    """
-    Discriminator Class for GAN
-    """
-    def __init__(self):
-        super(Discriminator, self).__init__()
-        conv2d_1 = torch.nn.Conv2d(in_channels=1, 
-                                   out_channels=28*4, 
-                                   kernel_size=4, 
-                                   stride=2,
-                                   padding=1,
-                                   bias=False)
-        conv2d_2 = torch.nn.Conv2d(in_channels=28*4, 
-                                   out_channels=28*8, 
-                                   kernel_size=4, 
-                                   stride=2,
-                                   padding=1,
-                                   bias=False)
-        conv2d_3 = torch.nn.Conv2d(in_channels=28*8, 
-                                   out_channels=1, 
-                                   kernel_size=7, 
-                                   stride=1,
-                                   padding=0,
-                                   bias=False)
+def solver_evaluate(cur_task, gen, solver, ratio, TestDataLoaders):
+    gen.eval()
+    solver.eval()
 
-        self.network = torch.nn.Sequential(
-            conv2d_1,
-            torch.nn.BatchNorm2d(num_features=28*4),
-            torch.nn.LeakyReLU(inplace=True),
-            conv2d_2,
-            torch.nn.BatchNorm2d(num_features=28*8),
-            torch.nn.LeakyReLU(inplace=True),
-            conv2d_3,
-            torch.nn.Sigmoid()
-        )
+    solver_loss = 0.0
+    celoss = torch.nn.CrossEntropyLoss()
+    test_dataloader = TestDataLoaders[:cur_task+1]
 
-        if torch.cuda.is_available():
-            self.network = self.network.cuda()
+    for i, data in enumerate(test_dataloader):
+        for image, label in data:
+            if torch.cuda.is_available():
+                image = image.cuda()
+                label = label.cuda()
 
-    def forward(self, x):
-        return self.network(x).view(-1, 1)
+            with torch.autograd.no_grad():
+                output = solver(image)
+                if i == cur_task:
+                    solver_loss += celoss(output, label) * ratio
+                
+                else:
+                    solver_loss += celoss(output, label) * (1 - ratio)
 
-class Solver(torch.nn.Module):
-    """
-    Solver Class for Deep Generative Replay
-    """
-    def __init__(self):
-        super(Solver, self).__init__()
-        fc1 = torch.nn.Linear(28*28, 100)
-        fc2 = torch.nn.Linear(100, 100)
-        fc3 = torch.nn.Linear(100, 100)
-        self.network = torch.nn.Sequential(
-            fc1,
-            torch.nn.ReLU(),
-            fc2,
-            torch.nn.ReLU(),
-            fc3
-        )
-
-        if torch.cuda.is_available():
-            self.network = self.network.cuda()
-
-    def forward(self, x):
-        return self.network(x)
+    return solver_loss
